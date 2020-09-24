@@ -1,0 +1,403 @@
+#!/usr/bin/env lua
+
+local UP = 0
+local DOWN = 1
+local LEFT = 2
+local RIGHT = 3
+
+local DELTA_X = {
+	[UP] = 0,
+	[DOWN] = 0,
+	[LEFT] = -1,
+	[RIGHT] = 1
+}
+
+local DELTA_Y = {
+	[UP] = -1,
+	[DOWN] = 1,
+	[LEFT] = 0,
+	[RIGHT] = 0
+}
+
+local OPPOSITE_DIRECTION = {
+	[UP] = DOWN,
+	[DOWN] = UP,
+	[LEFT] = RIGHT,
+	[RIGHT] = LEFT
+}
+
+local COLOR_BLACK     = "\027[30;1m"
+local COLOR_WHITE     = "\027[37;1m"
+local COLOR_RED       = "\027[31;1m"
+local COLOR_GREEN     = "\027[32;1m"
+local COLOR_YELLOW    = "\027[33;1m"
+local COLOR_BLUE      = "\027[34;1m"
+local COLOR_BLACK_BG  = "\027[40;1m"
+local COLOR_WHITE_BG  = "\027[47;1m"
+local COLOR_RED_BG    = "\027[41;1m"
+local COLOR_GREEN_BG  = "\027[42;1m"
+local COLOR_YELLOW_BG = "\027[43;1m"
+local COLOR_BLUE_BG   = "\027[44;1m"
+
+local COLOR_TABLE = {
+	["|"]  =  COLOR_WHITE,
+	["-"]  =  COLOR_WHITE,
+	["+"]  =  COLOR_WHITE,
+	["/"]  =  COLOR_BLUE,
+	["\\"] =  COLOR_BLUE,
+	["("]  =  COLOR_BLUE,
+	[")"]  =  COLOR_BLUE,
+	["^"]  =  COLOR_BLUE,
+	["v"]  =  COLOR_BLUE,
+	[">"]  =  COLOR_BLUE,
+	["<"]  =  COLOR_BLUE,
+	["?"]  =  COLOR_YELLOW,
+	["%"]  =  COLOR_YELLOW,
+	["."]  =  COLOR_YELLOW,
+	["*"]  =  COLOR_YELLOW,
+	["&"]  =  COLOR_YELLOW
+}
+
+function sleep(s)
+	local ntime = os.clock() + s
+	repeat until os.clock() > ntime
+end
+
+local function fail(msg)
+	if msg then
+		print(msg)
+	end
+	os.exit()
+end
+
+local function parseCode(file)
+	local data = {}
+
+	local width = 0
+
+	local j = 1
+	local line = file:read("*l")
+	while line do
+		for i = 1, line:len() do
+			if not data[i] then
+				data[i] = {}
+				if i > width then width = i end
+			end
+			data[i][j] = line:sub(i, i)
+		end
+
+		line = file:read("*l")
+		j = j + 1
+	end
+
+	return { data = data, width = width, height = j }
+end
+
+local function render(code, threads)
+	io.write("\027[2J\027[;H")
+
+	local function tat(x, y)
+		local r = {}
+		for i = 1, #threads do
+			local t = threads[i]
+			if t.x == x and t.y == y then
+				table.insert(r, t)
+			end
+		end
+		return r
+	end
+
+	for j = 1, code.height do
+		for i = 1, code.width do
+			local ts = tat(i, j)
+			local e = code.data[i][j]
+
+			if e then
+				local fg
+				local ec = COLOR_TABLE[e]
+				if ec then
+					fg = ec
+				else
+					fg = COLOR_WHITE
+				end
+
+				local bg
+				if #ts > 0 then
+					bg = COLOR_RED_BG
+				else
+					bg = COLOR_BLACK_BG
+				end
+
+				io.write(bg .. fg .. e)
+			else
+				io.write(COLOR_BLACK_BG .. COLOR_WHITE .. " ")
+			end
+		end
+		io.write("\n")
+	end
+	io.flush()
+end
+
+local function interpret(code)
+	local starts = {}
+
+	local function at(i, j)
+		if code.data[i] then
+			return code.data[i][j]
+		end
+	end
+
+	for j = 1, code.height do
+		for i = 1, code.width do
+			local e = at(i, j)
+			
+			if e == "." then
+				local p = {}
+			
+				local function a(dir)
+					local k, l
+
+					if dir == UP then
+						k = 0
+						l = -1
+					elseif dir == DOWN then
+						k = 0
+						l = 1
+					elseif dir == LEFT then
+						k = -1
+						l = 0
+					elseif dir == RIGHT then
+						k = 1
+						l = 0
+					end
+
+					local e = at(i + k, j + l)
+					if e and e ~= " " then
+						table.insert(p, { 
+							dir = dir
+						})
+					end
+				end
+
+				a(UP)
+				a(DOWN)
+				a(LEFT)
+				a(RIGHT)
+
+				if #p ~= 1 then
+					fail("invalid .")
+				end
+
+				local s = p[1]
+				s.x = i
+				s.y = j
+				table.insert(starts, s)
+			end
+		end
+	end
+
+	local threads = {}
+
+	local function spawn(x, y, dir)
+		local t = {
+			value = 0,
+			x = x,
+			y = y,
+			dir = dir
+		}
+		table.insert(threads, t)
+		return t
+	end
+
+	local function move(t)
+		if t.dir == UP then
+			t.y = t.y - 1
+		elseif t.dir == DOWN then
+			t.y = t.y + 1
+		elseif t.dir == LEFT then
+			t.x = t.x - 1
+		elseif t.dir == RIGHT then
+			t.x = t.x + 1
+		else
+			fail("invalid direction")
+		end
+	end
+
+	local function kill(t)
+		t.dead = true
+	end
+
+	local function reap()
+		local nt = {}
+
+		for i = 1, #threads do
+			local t = threads[i]
+			if not t.dead then
+				table.insert(nt, t)
+			end
+		end
+
+		threads = nt
+	end
+
+	for i = 1, #starts do
+		local s = starts[i]
+		spawn(s.x, s.y, s.dir)
+	end
+
+	while #threads > 0 do
+		render(code, threads)
+		sleep(0.1)
+
+		for i = 1, #threads do
+			local t = threads[i]
+			local e = at(t.x, t.y)
+
+			if e == "|" then
+				if t.dir == UP or t.dir == DOWN then
+					move(t)
+				else
+					kill(t)
+				end
+			elseif e == "-" then
+				if t.dir == LEFT or t.dir == RIGHT then
+					move(t)
+				else
+					kill(t)
+				end
+			elseif e == "(" then
+				if t.dir == LEFT then
+					t.dir = RIGHT
+				end
+				move(t)
+			elseif e == ")" then
+				if t.dir == RIGHT then
+					t.dir = LEFT
+				end
+				move(t)
+			elseif e == "/" then
+				if t.dir == UP then
+					t.dir = RIGHT
+				elseif t.dir == DOWN then
+					t.dir = LEFT
+				elseif t.dir == LEFT then
+					t.dir = DOWN
+				elseif t.dir == RIGHT then
+					t.dir = UP
+				end
+				move(t)
+			elseif e == "\\" then
+				if t.dir == UP then
+					t.dir = LEFT
+				elseif t.dir == DOWN then
+					t.dir = RIGHT
+				elseif t.dir == LEFT then
+					t.dir = UP
+				elseif t.dir == RIGHT then
+					t.dir = DOWN
+				end
+				move(t)
+			elseif e == "+" then
+				move(t)
+			elseif e == "^" then
+				if t.dir == UP then
+					move(t)
+				elseif t.dir == DOWN then
+					kill(t)
+				elseif t.dir == LEFT or t.dir == RIGHT then
+					t.dir = UP
+					move(t)
+				end
+			elseif e == "v" then
+				if t.dir == UP then
+					kill(t)
+				elseif t.dir == DOWN then
+					move(t)
+				elseif t.dir == LEFT or t.dir == RIGHT then
+					t.dir = DOWN
+					move(t)
+				end
+			elseif e == ">" then
+				if t.dir == LEFT then
+					kill(t)
+				elseif t.dir == RIGHT then
+					move(t)
+				elseif t.dir == UP or t.dir == DOWN then
+					t.dir = RIGHT
+					move(t)
+				end
+			elseif e == "<" then
+				if t.dir == LEFT then
+					move(t)
+				elseif t.dir == RIGHT then
+					kill(t)
+				elseif t.dir == UP or t.dir == DOWN then
+					t.dir = LEFT
+					move(t)
+				end
+			elseif e == "?" then
+				t.dir = math.random(0, 3)
+				move(t)
+			elseif e == "%" then
+				move(t)
+				move(t)
+			elseif e == "." then
+				move(t)
+			elseif e == "&" then
+				kill(t)
+			elseif e == "*" then
+				local p = {
+					[UP] = true,
+					[DOWN] = true,
+					[LEFT] = true,
+					[RIGHT] = true
+				}
+
+				p[t.dir] = false
+				p[OPPOSITE_DIRECTION[t.dir]] = false
+
+				for k, v in pairs(p) do
+					if v then
+						local g = at(t.x + DELTA_X[k], t.y + DELTA_Y[k])
+						if not g or g == " " then
+							p[k] = false
+						end
+					end
+				end
+
+				for k, v in pairs(p) do
+					if v then
+						local ts = spawn(t.x, t.y, k)
+						ts.value = t.value
+						move(ts)
+					end
+				end
+
+				move(t)
+			elseif e == nil or e == " " then
+				kill(t)
+			else
+				fail(e)
+			end
+		end
+
+		reap()
+	end
+
+	render(code, threads)
+end
+
+local args = { ... }
+
+if #args ~= 1 then
+	fail("Usage: cf <file>")
+end
+
+local file = io.open(args[1], "r")
+if not file then
+	fail("File not found: '" .. tostring(args[1]) .. "'")
+end
+local code = parseCode(file)
+file:close()
+
+interpret(code)
